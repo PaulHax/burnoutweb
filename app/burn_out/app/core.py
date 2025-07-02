@@ -23,6 +23,11 @@ from kwiver.vital.types import tag_traits_by_tag
 from kwiver.vital import plugin_management
 from kwiver.vital import vital_logging
 
+# Feature detection imports
+from .features.feature_storage import FeatureDataManager
+from .features.auto_detection_trigger import trigger_feature_detection
+import asyncio
+
 DEBUG_LEVEL = logging.DEBUG
 
 vpm = plugin_management.plugin_manager_instance()
@@ -120,6 +125,11 @@ class BurnOutApp:
         self.scene = Scene(self.server)
         self.world_view = WorldView(self.server)
 
+        # Feature detection setup
+        self.feature_manager = FeatureDataManager()
+        self.current_video_path = None
+        logger.info("Feature detection system initialized")
+
         self.server.cli.add_argument(
             "--use-tk",
             help="Use tcl/tk for file pickers. Useful if working with the web version",
@@ -216,6 +226,10 @@ class BurnOutApp:
     def open_file(self, file_to_load=None):
         if file_to_load is None:
             return
+        
+        # Store video path for feature detection
+        self.current_video_path = file_to_load
+        
         logger.debug("open file")
         logger.debug(f" => {file_to_load=}")
         if self.video_source:
@@ -243,6 +257,12 @@ class BurnOutApp:
 
     def on_metadata_loaded(self, metadata):
         self.scene.set_metadata(metadata)
+        
+        # Trigger automatic feature detection
+        if self.current_video_path:
+            asyncio.create_task(self._trigger_auto_features())
+        else:
+            logger.warning("No video path available for auto feature detection")
 
     def exit(self):
         asynchronous.create_task(self.server.stop())
@@ -381,6 +401,59 @@ class BurnOutApp:
     def on_video_playing(self, video_playing, **kwargs):
         if video_playing:
             asynchronous.create_task(self._play())
+
+    # -------------------------------------------------------------------------
+    # Feature Detection
+    # -------------------------------------------------------------------------
+
+    async def _trigger_auto_features(self):
+        """Trigger automatic feature detection after metadata loading."""
+        try:
+            success = await trigger_feature_detection(
+                video_path=self.current_video_path,
+                video_config_path=pick_video_reader_config(self.current_video_path),
+                feature_manager=self.feature_manager,
+                progress_callback=self._on_feature_progress,
+                completion_callback=self._on_feature_completion
+            )
+            
+            if success:
+                logger.info("Automatic feature detection started")
+            else:
+                logger.info("Feature detection not needed (features already exist)")
+                
+        except Exception as e:
+            logger.error(f"Error triggering automatic feature detection: {e}")
+    
+    def _on_feature_progress(self, progress_data):
+        """Handle feature detection progress updates."""
+        status = progress_data.get('status', 'unknown')
+        message = progress_data.get('message', '')
+        
+        if status == 'frame_processed':
+            frame_num = progress_data.get('frame_number', 0)
+            features_count = progress_data.get('features_count', 0)
+            progress_pct = progress_data.get('progress', 0) * 100
+            logger.debug(f"Features: Frame {frame_num}, {features_count} features ({progress_pct:.1f}%)")
+        else:
+            logger.info(f"Feature detection {status}: {message}")
+    
+    def _on_feature_completion(self, results):
+        """Handle feature detection completion."""
+        if results.get('success', False):
+            summary = results.get('summary', {})
+            frames = summary.get('total_frames_processed', 0)
+            features = summary.get('total_features_detected', 0)
+            avg_features = summary.get('average_features_per_frame', 0)
+            
+            logger.info(f"Feature detection completed: {frames} frames, {features} total features, {avg_features:.1f} avg per frame")
+            
+            # TODO: Integrate with scene and visualization
+            # self.scene could be notified of new features here
+            
+        else:
+            error = results.get('error', 'Unknown error')
+            logger.error(f"Feature detection failed: {error}")
 
     # -------------------------------------------------------------------------
     # GUI

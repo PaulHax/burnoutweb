@@ -25,7 +25,6 @@ from kwiver.vital import plugin_management
 from kwiver.vital import vital_logging
 
 # Burnoutweb imports (using existing infrastructure)
-from burn_out.app.core import pick_video_reader_config
 from .config.orb_detector_config import ORBDetectorConfig
 from .config.feature_tracker_config import FeatureTrackerConfig
 
@@ -71,19 +70,20 @@ class FeatureTrackingService:
         process.start()
         return process
 
-    def detect_features(self, video_path: str, config_params: Optional[Dict] = None):
+    def detect_features(self, video_path: str, video_config_path: str, config_params: Optional[Dict] = None):
         """
         Start feature detection (mirrors VideoImporter.run()).
 
         Args:
             video_path: Path to video file
+            video_config_path: Path to KWIVER video reader config
             config_params: Override configuration parameters
         """
         config_params = config_params or {}
         logger.info(f"Starting feature detection on {video_path}")
 
         # Queue detection task (like VideoImporter)
-        self.task_queue.put((_extract_features, (video_path, config_params)))
+        self.task_queue.put((_extract_features, (video_path, video_config_path, config_params)))
 
         # Start async monitoring (like VideoImporter._await_metadata_results)
         self._monitoring_task = asyncio.create_task(self._await_results())
@@ -178,7 +178,7 @@ def _worker(task_queue, result_queue, progress_queue):
 
 
 def _extract_features(
-    video_path: str, config_params: Dict, progress_callback: Callable
+    video_path: str, video_config_path: str, config_params: Dict, progress_callback: Callable
 ):
     """
     Extract features using VALIDATED Phase 0 approach.
@@ -201,8 +201,7 @@ def _extract_features(
 
     try:
         # Phase 1: Video setup (VALIDATED - works with H.264)
-        config_file = pick_video_reader_config(video_path)
-        config = read_config_file(config_file)
+        config = read_config_file(video_config_path)
         video_reader = kva.VideoInput.set_nested_algo_configuration(
             "video_reader", config
         )
@@ -414,6 +413,7 @@ def create_feature_service(progress_callback=None, completion_callback=None):
 
 async def detect_features_async(
     video_path: str,
+    video_config_path: str,
     config_params: Optional[Dict] = None,
     progress_callback: Optional[Callable] = None,
 ):
@@ -422,6 +422,7 @@ async def detect_features_async(
 
     Args:
         video_path: Path to video file
+        video_config_path: Path to KWIVER video reader config
         config_params: Configuration overrides
         progress_callback: Progress update callback
 
@@ -439,7 +440,7 @@ async def detect_features_async(
     )
 
     try:
-        service.detect_features(video_path, config_params)
+        service.detect_features(video_path, video_config_path, config_params)
 
         # Wait for completion
         while result is None:
